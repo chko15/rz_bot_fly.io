@@ -20,12 +20,18 @@ async def on_ready():
     print(f"Bot connected as {bot.user}")
 
     try:
-        guild = discord.Object(id=GUILD_ID)
-        bot.tree.copy_global_to(guild=guild)
-        synced = await bot.tree.sync(guild=guild)
-        print(f"Synced {len(synced)} slash command(s)")
+        synced = await bot.tree.sync()
+        print(f"Globally synced {len(synced)} commands")
     except Exception as e:
         print("Slash sync failed:", e)
+
+@bot.tree.error
+async def on_app_command_error(interaction, error):
+    print("Slash Error:", error)
+    if interaction.response.is_done():
+        await interaction.followup.send("Error occurred.", ephemeral=True)
+    else:
+        await interaction.response.send_message("Error occurred.", ephemeral=True)
 
 async def load_extensions():
     await bot.load_extension("cogs.anti_spam")
