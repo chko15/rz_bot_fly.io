@@ -21,14 +21,43 @@ WHITELIST_ROLE_IDS = [
     1427554165235646496
 ]
 
+ALLOWED_ROLE_IDS = [
+    1427543936829882480,
+    1464630512294564030
+]
+
 STRIKE_FILE = "strikes.json"
 
 
 class AntiSpam(commands.Cog):
-    def __init__(self, bot):
+    def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.user_attachment_history = defaultdict(list)
         self.user_strikes = self.load_json()
+
+    # =========================
+    # PERMISSION CHECK
+    # =========================
+
+    def has_permission(self, member: discord.Member) -> bool:
+        return any(role.id in ALLOWED_ROLE_IDS for role in member.roles)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not isinstance(interaction.user, discord.Member):
+            return False
+
+        if not self.has_permission(interaction.user):
+            await interaction.response.send_message(
+                "You do not have permission to use this command.",
+                ephemeral=True
+            )
+            return False
+
+        return True
+
+    # =========================
+    # JSON STORAGE
+    # =========================
 
     def load_json(self):
         if os.path.exists(STRIKE_FILE):
@@ -40,11 +69,16 @@ class AntiSpam(commands.Cog):
         with open(STRIKE_FILE, "w") as f:
             json.dump(self.user_strikes, f)
 
+    # =========================
+    # WHITELIST
+    # =========================
+
     def is_whitelisted(self, member: discord.Member):
-        for role in member.roles:
-            if role.id in WHITELIST_ROLE_IDS:
-                return True
-        return False
+        return any(role.id in WHITELIST_ROLE_IDS for role in member.roles)
+
+    # =========================
+    # HASH FILE
+    # =========================
 
     async def get_file_hash(self, url):
         async with aiohttp.ClientSession() as session:
@@ -52,10 +86,17 @@ class AntiSpam(commands.Cog):
                 data = await response.read()
                 return hashlib.sha256(data).hexdigest()
 
+    # =========================
+    # MESSAGE LISTENER
+    # =========================
+
     @commands.Cog.listener()
-    async def on_message(self, message):
+    async def on_message(self, message: discord.Message):
 
         if message.author.bot:
+            return
+
+        if not isinstance(message.author, discord.Member):
             return
 
         if self.is_whitelisted(message.author):
@@ -74,6 +115,7 @@ class AntiSpam(commands.Cog):
                     "time": now
                 })
 
+            # Remove old entries
             self.user_attachment_history[message.author.id] = [
                 entry for entry in self.user_attachment_history[message.author.id]
                 if now - entry["time"] < timedelta(seconds=TIME_WINDOW_SECONDS)
@@ -86,12 +128,25 @@ class AntiSpam(commands.Cog):
 
             for file_hash, channels in hashes.items():
                 if len(channels) >= MIN_CHANNEL_SPREAD:
-                    await self.punish_user(message)
+                    await self.punish_user(
+                        message,
+                        "Same attachment spammed across multiple channels"
+                    )
                     return
 
-    async def punish_user(self, message):
+        await self.bot.process_commands(message)
+
+    # =========================
+    # PUNISH + LOG
+    # =========================
+
+    async def punish_user(self, message: discord.Message, reason: str):
 
         now = discord.utils.utcnow()
+
+        message_content = message.content or "No text"
+        attachment_links = [att.url for att in message.attachments]
+        jump_link = message.jump_url
 
         try:
             await message.delete()
@@ -115,31 +170,75 @@ class AntiSpam(commands.Cog):
 
         if strike_count >= MAX_STRIKES:
             await message.guild.ban(message.author, reason="Repeated spam")
-            action = "User BANNED"
+            action_taken = "User BANNED"
         else:
             await message.author.timeout(
                 timedelta(minutes=TIMEOUT_DURATION),
                 reason="Spam detected"
             )
-            action = "User timed out"
+            action_taken = f"User timed out ({TIMEOUT_DURATION} minutes)"
 
         log_channel = self.bot.get_channel(LOG_CHANNEL_ID)
+
         if log_channel:
             embed = discord.Embed(
-                title="🚨 Spam Detected",
+                title="🚨 Cross-Channel Spam Detected",
                 color=discord.Color.red(),
                 timestamp=now
             )
-            embed.add_field(name="User", value=str(message.author), inline=False)
-            embed.add_field(name="Action", value=action, inline=False)
+
+            embed.add_field(
+                name="User",
+                value=f"{message.author} ({message.author.id})",
+                inline=False
+            )
+            embed.add_field(name="Reason", value=reason, inline=False)
+            embed.add_field(name="Action", value=action_taken, inline=False)
             embed.add_field(name="Strike Count", value=str(strike_count), inline=False)
+
+            embed.add_field(
+                name="Message Content",
+                value=message_content[:1000],
+                inline=False
+            )
+
+            if attachment_links:
+                embed.add_field(
+                    name="Attachment URLs",
+                    value="\n".join(attachment_links),
+                    inline=False
+                )
+
+            embed.add_field(
+                name="Jump Link",
+                value=jump_link,
+                inline=False
+            )
+
             await log_channel.send(embed=embed)
 
-    @commands.hybrid_command(name="view_strikes")
-    async def view_strikes(self, ctx, member: discord.Member):
+    # =========================
+    # SLASH COMMAND
+    # =========================
+
+    @discord.app_commands.command(
+        name="view_strikes",
+        description="View strike count of a user"
+    )
+    async def view_strikes(
+        self,
+        interaction: discord.Interaction,
+        member: discord.Member
+    ):
+        await interaction.response.defer(ephemeral=True)
+
         strikes = len(self.user_strikes.get(str(member.id), []))
-        await ctx.send(f"{member.mention} has {strikes} strike(s).")
+
+        await interaction.followup.send(
+            f"{member.mention} has **{strikes} strike(s)**.",
+            ephemeral=True
+        )
 
 
-async def setup(bot):
+async def setup(bot: commands.Bot):
     await bot.add_cog(AntiSpam(bot))

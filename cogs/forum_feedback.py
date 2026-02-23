@@ -13,10 +13,35 @@ TAG_IDS = {
 
 STATUS_TAG_IDS = set(TAG_IDS.values())
 
+ALLOWED_ROLE_IDS = [
+    1427543936829882480,
+    1464630512294564030
+]
+
 
 class ForumFeedback(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    # =========================
+    # PERMISSION
+    # =========================
+
+    def has_permission(self, member: discord.Member) -> bool:
+        return any(role.id in ALLOWED_ROLE_IDS for role in member.roles)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not isinstance(interaction.user, discord.Member):
+            return False
+
+        if not self.has_permission(interaction.user):
+            await interaction.response.send_message(
+                "You do not have permission to use this command.",
+                ephemeral=True
+            )
+            return False
+
+        return True
 
     # =========================
     # HELPERS
