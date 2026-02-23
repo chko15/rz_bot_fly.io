@@ -15,8 +15,12 @@ STATUS_TAG_IDS = set(TAG_IDS.values())
 
 
 class ForumFeedback(commands.Cog):
-    def __init__(self, bot):
+    def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    # =========================
+    # HELPERS
+    # =========================
 
     def get_forum_tag(self, forum: discord.ForumChannel, tag_id: int):
         for tag in forum.available_tags:
@@ -36,6 +40,10 @@ class ForumFeedback(commands.Cog):
 
         return user_tags, status_tags
 
+    # =========================
+    # AUTO NEW TAG
+    # =========================
+
     @commands.Cog.listener()
     async def on_thread_create(self, thread: discord.Thread):
         if not isinstance(thread.parent, discord.ForumChannel):
@@ -53,19 +61,46 @@ class ForumFeedback(commands.Cog):
         if not status_tags:
             await thread.edit(applied_tags=user_tags + [new_tag])
 
-    @commands.hybrid_command(name="accept")
-    async def accept(self, ctx):
-        await self.set_status(ctx, "ACCEPTED", lock=False)
+    # =========================
+    # STATUS SETTER
+    # =========================
 
-    async def set_status(self, ctx, status_name, lock=None):
+    async def set_status(
+        self,
+        interaction: discord.Interaction,
+        status_name: str,
+        lock: bool | None = None
+    ):
+        await interaction.response.defer(ephemeral=True)
 
-        thread = ctx.channel
+        thread = interaction.channel
+
         if not isinstance(thread, discord.Thread):
-            await ctx.send("Use inside forum thread.")
+            await interaction.followup.send(
+                "Use this command inside a forum thread.",
+                ephemeral=True
+            )
             return
 
         forum = thread.parent
+        if not isinstance(forum, discord.ForumChannel):
+            return
+
+        perms = thread.permissions_for(thread.guild.me)
+        if not perms.manage_threads:
+            await interaction.followup.send(
+                "Bot does not have permission to manage threads.",
+                ephemeral=True
+            )
+            return
+
         status_tag = self.get_forum_tag(forum, TAG_IDS[status_name])
+        if not status_tag:
+            await interaction.followup.send(
+                f"{status_name} tag not found.",
+                ephemeral=True
+            )
+            return
 
         user_tags, _ = self.split_tags(thread.applied_tags)
 
@@ -74,8 +109,36 @@ class ForumFeedback(commands.Cog):
             kwargs["locked"] = lock
 
         await thread.edit(**kwargs)
-        await ctx.send(f"Status set to {status_name}.")
+
+        await interaction.followup.send(
+            f"Status set to **{status_name.replace('_', ' ').title()}**.",
+            ephemeral=True
+        )
+
+    # =========================
+    # SLASH COMMANDS
+    # =========================
+
+    @discord.app_commands.command(name="accept", description="Accept this post")
+    async def accept(self, interaction: discord.Interaction):
+        await self.set_status(interaction, "ACCEPTED", lock=False)
+
+    @discord.app_commands.command(name="reject", description="Reject this post")
+    async def reject(self, interaction: discord.Interaction):
+        await self.set_status(interaction, "REJECTED", lock=True)
+
+    @discord.app_commands.command(name="review", description="Set status to Under Review")
+    async def review(self, interaction: discord.Interaction):
+        await self.set_status(interaction, "UNDER_REVIEW")
+
+    @discord.app_commands.command(name="progress", description="Set status to In Progress")
+    async def progress(self, interaction: discord.Interaction):
+        await self.set_status(interaction, "IN_PROGRESS")
+
+    @discord.app_commands.command(name="implemented", description="Set status to Implemented")
+    async def implemented(self, interaction: discord.Interaction):
+        await self.set_status(interaction, "IMPLEMENTED", lock=True)
 
 
-async def setup(bot):
+async def setup(bot: commands.Bot):
     await bot.add_cog(ForumFeedback(bot))

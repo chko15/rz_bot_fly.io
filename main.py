@@ -34,8 +34,17 @@ async def on_app_command_error(interaction, error):
         await interaction.response.send_message("Error occurred.", ephemeral=True)
 
 async def load_extensions():
-    await bot.load_extension("cogs.anti_spam")
-    await bot.load_extension("cogs.forum_feedback")
+    try:
+        await bot.load_extension("cogs.anti_spam")
+        print("Loaded anti_spam")
+    except Exception as e:
+        print("Failed loading anti_spam:", e)
+
+    try:
+        await bot.load_extension("cogs.forum_feedback")
+        print("Loaded forum_feedback")
+    except Exception as e:
+        print("Failed loading forum_feedback:", e)
 
 async def main():
     async with bot:
