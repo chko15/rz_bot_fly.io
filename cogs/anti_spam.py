@@ -14,8 +14,8 @@ import aiohttp
 LOG_CHANNEL_ID = 1466507799361229003
 
 TIME_WINDOW_SECONDS = 30
-MIN_CHANNEL_SPREAD = 2        # cross-channel detection
-MIN_SAME_CHANNEL_REPEAT = 2   # same-channel detection
+MIN_CHANNEL_SPREAD = 2
+MIN_SAME_CHANNEL_REPEAT = 3
 TIMEOUT_DURATION = 10
 STRIKE_RESET_TIME = 60
 MAX_STRIKES = 2
@@ -124,6 +124,9 @@ class AntiSpam(commands.Cog):
                 "hash": file_hash,
                 "channel": message.channel.id,
                 "message_id": message.id,
+                "content": message.content,
+                "attachments": [att.url for att in message.attachments],
+                "jump": message.jump_url,
                 "time": now
             })
 
@@ -138,7 +141,7 @@ class AntiSpam(commands.Cog):
         await self.bot.process_commands(message)
 
     # =========================
-    # SPAM CHECK LOGIC
+    # SPAM CHECK
     # =========================
 
     async def check_spam(self, message: discord.Message):
@@ -155,20 +158,18 @@ class AntiSpam(commands.Cog):
 
         for file_hash in hash_channels:
 
-            # Cross-channel detection
             if len(hash_channels[file_hash]) >= MIN_CHANNEL_SPREAD:
                 await self.punish_user(message, file_hash,
                     "Same attachment spammed across multiple channels")
                 return
 
-            # Same-channel repeat detection
             if hash_counts[file_hash] >= MIN_SAME_CHANNEL_REPEAT:
                 await self.punish_user(message, file_hash,
                     "Same attachment spammed repeatedly in one channel")
                 return
 
     # =========================
-    # PUNISH + DELETE ALL COPIES
+    # PUNISH + LOG
     # =========================
 
     async def punish_user(self, message: discord.Message, file_hash: str, reason: str):
@@ -181,6 +182,11 @@ class AntiSpam(commands.Cog):
             if entry["hash"] == file_hash
         ]
 
+        # Capture info BEFORE deletion
+        message_content = related_entries[-1]["content"] if related_entries else "No text"
+        attachment_links = related_entries[-1]["attachments"] if related_entries else []
+        jump_link = related_entries[-1]["jump"] if related_entries else message.jump_url
+
         # Delete ALL related spam messages
         for entry in related_entries:
             channel = message.guild.get_channel(entry["channel"])
@@ -189,7 +195,7 @@ class AntiSpam(commands.Cog):
                     msg = await channel.fetch_message(entry["message_id"])
                     await msg.delete()
                 except Exception as e:
-                    print("Failed deleting message:", e)
+                    print("Delete failed:", e)
 
         # Clear history for that hash
         self.user_attachment_history[user_id] = [
@@ -224,13 +230,12 @@ class AntiSpam(commands.Cog):
             )
             action_taken = f"User timed out ({TIMEOUT_DURATION} minutes)"
 
-        # Logging
+        # Log embed
         log_channel = self.bot.get_channel(LOG_CHANNEL_ID)
 
         if log_channel:
-
             embed = discord.Embed(
-                title="🚨 Spam Detected",
+                title="🚨 Cross-Channel Spam Detected",
                 color=discord.Color.red(),
                 timestamp=now
             )
@@ -245,10 +250,29 @@ class AntiSpam(commands.Cog):
             embed.add_field(name="Action", value=action_taken, inline=False)
             embed.add_field(name="Strike Count", value=str(strike_count), inline=False)
 
+            embed.add_field(
+                name="Message Content",
+                value=message_content[:1000] if message_content else "No text",
+                inline=False
+            )
+
+            if attachment_links:
+                embed.add_field(
+                    name="Attachment URLs",
+                    value="\n".join(attachment_links),
+                    inline=False
+                )
+
+            embed.add_field(
+                name="Jump Link",
+                value=jump_link,
+                inline=False
+            )
+
             await log_channel.send(embed=embed)
 
     # =========================
-    # SLASH COMMAND
+    # SLASH COMMANDS
     # =========================
 
     @discord.app_commands.command(
@@ -266,6 +290,25 @@ class AntiSpam(commands.Cog):
 
         await interaction.followup.send(
             f"{member.mention} has **{strikes} strike(s)**.",
+            ephemeral=True
+        )
+
+    @discord.app_commands.command(
+        name="reset_strikes",
+        description="Reset strike count of a user"
+    )
+    async def reset_strikes(
+        self,
+        interaction: discord.Interaction,
+        member: discord.Member
+    ):
+        await interaction.response.defer(ephemeral=True)
+
+        self.user_strikes[str(member.id)] = []
+        self.save_json()
+
+        await interaction.followup.send(
+            f"Strikes reset for {member.mention}.",
             ephemeral=True
         )
 
