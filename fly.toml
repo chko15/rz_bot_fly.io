@@ -1,0 +1,12 @@
+app = "rz-bot"
+primary_region = "sin"
+
+[build]
+
+[processes]
+  app = "python main.py"
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1

@@ -2,9 +2,8 @@ import discord
 from discord.ext import commands
 import os
 import asyncio
- 
+
 TOKEN = os.getenv("TOKEN")
-GUILD_ID = 1174287094630326352  # Your server ID
 
 if not TOKEN:
     raise ValueError("TOKEN environment variable is missing!")
@@ -18,7 +17,6 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 @bot.event
 async def on_ready():
     print(f"Bot connected as {bot.user}")
-
     try:
         synced = await bot.tree.sync()
         print(f"Globally synced {len(synced)} commands")
@@ -34,17 +32,8 @@ async def on_app_command_error(interaction, error):
         await interaction.response.send_message("Error occurred.", ephemeral=True)
 
 async def load_extensions():
-    try:
-        await bot.load_extension("cogs.anti_spam")
-        print("Loaded anti_spam")
-    except Exception as e:
-        print("Failed loading anti_spam:", e)
-
-    try:
-        await bot.load_extension("cogs.forum_feedback")
-        print("Loaded forum_feedback")
-    except Exception as e:
-        print("Failed loading forum_feedback:", e)
+    await bot.load_extension("cogs.anti_spam")
+    await bot.load_extension("cogs.forum_feedback")
 
 async def main():
     async with bot:
