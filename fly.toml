@@ -1,6 +1,9 @@
 app = "rz-bot"
 primary_region = "sin"
 
+kill_signal = "SIGINT"
+kill_timeout = 30
+
 [build]
 
 [processes]
