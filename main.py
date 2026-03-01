@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 import os
 import asyncio
+from aiohttp import web
 
 TOKEN = os.getenv("TOKEN")
 
@@ -14,6 +15,25 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# ======================
+# Dummy HTTP Server
+# ======================
+
+async def handle(request):
+    return web.Response(text="Bot is running")
+
+async def start_webserver():
+    app = web.Application()
+    app.router.add_get("/", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", 8080)
+    await site.start()
+
+# ======================
+# Discord Events
+# ======================
+
 @bot.event
 async def on_ready():
     print(f"Bot connected as {bot.user}")
@@ -23,19 +43,12 @@ async def on_ready():
     except Exception as e:
         print("Slash sync failed:", e)
 
-@bot.tree.error
-async def on_app_command_error(interaction, error):
-    print("Slash Error:", error)
-    if interaction.response.is_done():
-        await interaction.followup.send("Error occurred.", ephemeral=True)
-    else:
-        await interaction.response.send_message("Error occurred.", ephemeral=True)
-
 async def load_extensions():
     await bot.load_extension("cogs.anti_spam")
     await bot.load_extension("cogs.forum_feedback")
 
 async def main():
+    await start_webserver()  # ← IMPORTANT
     async with bot:
         await load_extensions()
         await bot.start(TOKEN)
