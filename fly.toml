@@ -1,26 +1,23 @@
-app = "rz-bot"
-primary_region = "sin"
+# fly.toml app configuration file generated for rz-bot-fly-io on 2026-03-23T14:14:58Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'rz-bot-fly-io'
+primary_region = 'ams'
 
 [build]
 
-[processes]
-  app = "python main.py"
-
-[[services]]
-  processes = ["app"]
+[http_service]
   internal_port = 8080
-  protocol = "tcp"
-
-  [[services.ports]]
-    port = 80
-
-  [[services.http_checks]]
-    interval = "10s"
-    timeout = "2s"
-    method = "get"
-    path = "/"
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
 
 [[vm]]
-  memory = "512mb"
-  cpu_kind = "shared"
+  memory = '1gb'
+  cpu_kind = 'shared'
   cpus = 1
+  memory_mb = 256
