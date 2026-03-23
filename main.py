@@ -7,7 +7,7 @@ from aiohttp import web
 TOKEN = os.getenv("TOKEN")
 
 if not TOKEN:
-    raise ValueError("TOKEN environment variable is missing!")
+    raise ValueError("TOKEN is missing!")
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -16,9 +16,8 @@ intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ======================
-# DUMMY WEB SERVER (IMPORTANT FOR FLY)
+# DUMMY HTTP SERVER (FOR FLY)
 # ======================
-
 async def health(request):
     return web.Response(text="OK")
 
@@ -31,9 +30,8 @@ async def start_webserver():
     await site.start()
 
 # ======================
-# READY EVENT
+# EVENTS
 # ======================
-
 @bot.event
 async def on_ready():
     print(f"Bot connected as {bot.user}")
@@ -41,28 +39,22 @@ async def on_ready():
         synced = await bot.tree.sync()
         print(f"Synced {len(synced)} commands")
     except Exception as e:
-        print("Slash sync failed:", e)
+        print("Sync error:", e)
 
 # ======================
 # LOAD COGS
 # ======================
-
 async def load_extensions():
     await bot.load_extension("cogs.anti_spam")
-    print("Loaded anti_spam")
-
     await bot.load_extension("cogs.forum_feedback")
-    print("Loaded forum_feedback")
 
 # ======================
 # MAIN
 # ======================
-
 async def main():
     await start_webserver()
-    async with bot:
-        await load_extensions()
-        await bot.start(TOKEN)
+    await load_extensions()
+    await bot.start(TOKEN)
 
 if __name__ == "__main__":
     asyncio.run(main())
