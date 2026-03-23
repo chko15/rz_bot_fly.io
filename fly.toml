@@ -3,6 +3,12 @@ primary_region = "sin"
 
 [build]
 
+[deploy]
+  strategy = "immediate"
+
+[experimental]
+  auto_rollback = false
+
 [processes]
   app = "python main.py"
 
