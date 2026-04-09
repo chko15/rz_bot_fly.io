@@ -12,8 +12,23 @@ LOG_CHANNEL_ID = 1466507799361229003
 TIME_WINDOW_SECONDS = 30
 MIN_CHANNEL_SPREAD = 2
 TIMEOUT_DURATION = 10
-STRIKE_RESET_TIME = 60
-MAX_STRIKES = 2
+STRIKE_RESET_TIME = 86400
+MAX_STRIKES = 3
+
+# =========================
+# NEW FEATURE CONFIG
+# =========================
+
+# Channels where attachment spam rule applies
+ATTACHMENT_LIMIT_CHANNELS = [
+    1427520803678851112,  # replace with your channel ID
+    # add more here
+]
+
+# Cooldown (minutes)
+ATTACHMENT_COOLDOWN_MINUTES = 2
+
+# =========================
 
 WHITELIST_ROLE_IDS = [
     1427543936829882480,
@@ -29,6 +44,9 @@ class AntiSpam(commands.Cog):
         self.bot = bot
         self.user_attachment_history = defaultdict(list)
         self.user_strikes = self.load_json()
+
+        # NEW: track last attachment send
+        self.user_last_attachment_time = {}
 
     def load_json(self):
         if os.path.exists(STRIKE_FILE):
@@ -59,6 +77,33 @@ class AntiSpam(commands.Cog):
 
         now = discord.utils.utcnow()
 
+        # =========================
+        # NEW FEATURE: ATTACHMENT RATE LIMIT
+        # =========================
+        if message.channel.id in ATTACHMENT_LIMIT_CHANNELS and message.attachments:
+            last_time = self.user_last_attachment_time.get(message.author.id)
+
+            if last_time:
+                diff = now - last_time
+                if diff < timedelta(minutes=ATTACHMENT_COOLDOWN_MINUTES):
+                    try:
+                        await message.delete()
+                    except:
+                        pass
+
+                    await message.channel.send(
+                        # f"{message.author.mention} you can only send 1 image every {ATTACHMENT_COOLDOWN_MINUTES} minute(s).",
+                        f"{message.author.mention} No Spam Attachment.",
+                        delete_after=5
+                    )
+                    return
+
+            # update last send time
+            self.user_last_attachment_time[message.author.id] = now
+
+        # =========================
+        # ORIGINAL LOGIC (UNCHANGED)
+        # =========================
         if message.attachments:
             for attachment in message.attachments:
                 file_hash = await self.get_file_hash(attachment.url)
