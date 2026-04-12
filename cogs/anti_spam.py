@@ -19,13 +19,10 @@ MAX_STRIKES = 3
 # NEW FEATURE CONFIG
 # =========================
 
-# Channels where attachment spam rule applies
 ATTACHMENT_LIMIT_CHANNELS = [
-    1427520803678851112,  # replace with your channel ID
-    # add more here
+    1427520803678851112,
 ]
 
-# Cooldown (minutes)
 ATTACHMENT_COOLDOWN_MINUTES = 2
 
 # =========================
@@ -33,7 +30,8 @@ ATTACHMENT_COOLDOWN_MINUTES = 2
 WHITELIST_ROLE_IDS = [
     1427543936829882480,
     1464630512294564030,
-    1427554165235646496
+    1427554165235646496,
+    1482773092890574989
 ]
 
 STRIKE_FILE = "strikes.json"
@@ -44,8 +42,6 @@ class AntiSpam(commands.Cog):
         self.bot = bot
         self.user_attachment_history = defaultdict(list)
         self.user_strikes = self.load_json()
-
-        # NEW: track last attachment send
         self.user_last_attachment_time = {}
 
     def load_json(self):
@@ -69,6 +65,7 @@ class AntiSpam(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
+
         if message.author.bot:
             return
 
@@ -78,70 +75,87 @@ class AntiSpam(commands.Cog):
         now = discord.utils.utcnow()
 
         # =========================
-        # NEW FEATURE: ATTACHMENT RATE LIMIT
+        # FEATURE 1: OFF-TOPIC RATE LIMIT
         # =========================
         if message.channel.id in ATTACHMENT_LIMIT_CHANNELS and message.attachments:
+
             last_time = self.user_last_attachment_time.get(message.author.id)
 
             if last_time:
                 diff = now - last_time
                 if diff < timedelta(minutes=ATTACHMENT_COOLDOWN_MINUTES):
+
                     try:
                         await message.delete()
-                    except:
-                        pass
+                    except Exception as e:
+                        print("Delete failed (rate limit):", e)
 
                     await message.channel.send(
-                        # f"{message.author.mention} you can only send 1 image every {ATTACHMENT_COOLDOWN_MINUTES} minute(s).",
                         f"{message.author.mention} No Spam Attachment.",
                         delete_after=5
                     )
-                    return
 
-            # update last send time
+                    return  # ONLY stop here
+
             self.user_last_attachment_time[message.author.id] = now
 
         # =========================
-        # ORIGINAL LOGIC (UNCHANGED)
+        # FEATURE 2: CROSS-CHANNEL SPAM (FIXED)
         # =========================
         if message.attachments:
+
             for attachment in message.attachments:
                 file_hash = await self.get_file_hash(attachment.url)
 
                 self.user_attachment_history[message.author.id].append({
                     "hash": file_hash,
                     "channel": message.channel.id,
-                    "time": now
+                    "time": now,
+                    "message_id": message.id
                 })
 
-            # cleanup old
+            # cleanup
             self.user_attachment_history[message.author.id] = [
                 e for e in self.user_attachment_history[message.author.id]
                 if now - e["time"] < timedelta(seconds=TIME_WINDOW_SECONDS)
             ]
 
             hashes = defaultdict(set)
+
             for entry in self.user_attachment_history[message.author.id]:
                 hashes[entry["hash"]].add(entry["channel"])
 
             for file_hash, channels in hashes.items():
                 if len(channels) >= MIN_CHANNEL_SPREAD:
-                    await self.punish(message)
+                    await self.punish(message, file_hash)
                     return
 
-    async def punish(self, message):
+    async def punish(self, message, file_hash):
+
         now = discord.utils.utcnow()
+        user_id = message.author.id
 
-        content = message.content or "No text"
-        attachments = [a.url for a in message.attachments]
-        jump = message.jump_url
+        related = [
+            e for e in self.user_attachment_history[user_id]
+            if e["hash"] == file_hash
+        ]
 
-        try:
-            await message.delete()
-        except:
-            pass
+        # =========================
+        # DELETE ALL RELATED MESSAGES (FIXED)
+        # =========================
+        for entry in related:
+            channel = message.guild.get_channel(entry["channel"])
+            if channel:
+                try:
+                    msg = await channel.fetch_message(entry["message_id"])
+                    await msg.delete()
+                except Exception as e:
+                    print("Delete failed (cross):", e)
 
-        uid = str(message.author.id)
+        # =========================
+        # STRIKE SYSTEM
+        # =========================
+        uid = str(user_id)
         self.user_strikes.setdefault(uid, [])
 
         self.user_strikes[uid] = [
@@ -160,22 +174,26 @@ class AntiSpam(commands.Cog):
             await message.author.timeout(timedelta(minutes=TIMEOUT_DURATION))
             action = "TIMEOUT"
 
+        # =========================
+        # LOG
+        # =========================
         log = self.bot.get_channel(LOG_CHANNEL_ID)
+
         if log:
             embed = discord.Embed(
                 title="🚨 Cross-Channel Spam Detected",
                 color=discord.Color.red(),
                 timestamp=now
             )
-            embed.add_field(name="User", value=f"{message.author} ({message.author.id})", inline=False)
+
+            embed.add_field(
+                name="User",
+                value=f"{message.author} ({message.author.id})",
+                inline=False
+            )
+
             embed.add_field(name="Action", value=action, inline=False)
             embed.add_field(name="Strikes", value=str(strikes), inline=False)
-            embed.add_field(name="Message", value=content[:1000], inline=False)
-
-            if attachments:
-                embed.add_field(name="Attachments", value="\n".join(attachments), inline=False)
-
-            embed.add_field(name="Jump", value=jump, inline=False)
 
             await log.send(embed=embed)
 
