@@ -46,6 +46,9 @@ class AntiSpam(commands.Cog):
         self.user_strikes = self.load_json()
         self.user_last_attachment_time = {}
 
+    # =========================
+    # JSON
+    # =========================
     def load_json(self):
         if os.path.exists(STRIKE_FILE):
             with open(STRIKE_FILE, "r") as f:
@@ -56,6 +59,7 @@ class AntiSpam(commands.Cog):
         with open(STRIKE_FILE, "w") as f:
             json.dump(self.user_strikes, f)
 
+    # =========================
     def is_whitelisted(self, member):
         return any(role.id in WHITELIST_ROLE_IDS for role in member.roles)
 
@@ -65,6 +69,74 @@ class AntiSpam(commands.Cog):
                 data = await response.read()
                 return hashlib.sha256(data).hexdigest()
 
+    # =========================
+    # UNIVERSAL LOG FUNCTION
+    # =========================
+    async def send_log(self, message, action, strikes, spam_type):
+
+        now = discord.utils.utcnow()
+
+        content = message.content or "No text"
+        attachments = [a.url for a in message.attachments]
+        jump = message.jump_url
+
+        log = self.bot.get_channel(LOG_CHANNEL_ID)
+
+        if log:
+            embed = discord.Embed(
+                title=f"🚨 {spam_type}",
+                color=discord.Color.red(),
+                timestamp=now
+            )
+
+            embed.add_field(
+                name="User",
+                value=f"{message.author} ({message.author.id})",
+                inline=False
+            )
+
+            embed.add_field(
+                name="Reason",
+                value=spam_type,
+                inline=False
+            )
+
+            embed.add_field(
+                name="Action",
+                value=action,
+                inline=False
+            )
+
+            embed.add_field(
+                name="Strike Count",
+                value=str(strikes),
+                inline=False
+            )
+
+            embed.add_field(
+                name="Message Content",
+                value=content[:1000],
+                inline=False
+            )
+
+            if attachments:
+                embed.add_field(
+                    name="Attachment URLs",
+                    value="\n".join(attachments),
+                    inline=False
+                )
+
+            embed.add_field(
+                name="Jump Link",
+                value=jump,
+                inline=False
+            )
+
+            await log.send(embed=embed)
+
+    # =========================
+    # MAIN EVENT
+    # =========================
     @commands.Cog.listener()
     async def on_message(self, message):
 
@@ -110,7 +182,7 @@ class AntiSpam(commands.Cog):
         key = content_key if content_key else "|".join(attachment_hashes)
 
         # =========================
-        # 2. SAME CHANNEL DUPLICATE (NOW WITH PUNISH)
+        # 2. DUPLICATE SPAM
         # =========================
         if key:
             self.user_message_history[message.author.id].append({
@@ -163,14 +235,13 @@ class AntiSpam(commands.Cog):
                     return
 
     # =========================
-    # DUPLICATE PUNISH (UPDATED)
+    # DUPLICATE PUNISH
     # =========================
     async def punish_duplicate(self, message, duplicates):
 
         now = discord.utils.utcnow()
         user_id = message.author.id
 
-        # delete all duplicates
         for entry in duplicates:
             channel = message.guild.get_channel(entry["channel"])
             if channel:
@@ -180,7 +251,6 @@ class AntiSpam(commands.Cog):
                 except:
                     pass
 
-        # STRIKE SYSTEM
         uid = str(user_id)
         self.user_strikes.setdefault(uid, [])
 
@@ -200,20 +270,7 @@ class AntiSpam(commands.Cog):
             await message.author.timeout(timedelta(minutes=TIMEOUT_DURATION))
             action = "TIMEOUT"
 
-        # LOG
-        log = self.bot.get_channel(LOG_CHANNEL_ID)
-        if log:
-            embed = discord.Embed(
-                title="🚨 Duplicate Spam Detected",
-                color=discord.Color.orange(),
-                timestamp=now
-            )
-
-            embed.add_field(name="User", value=f"{message.author}", inline=False)
-            embed.add_field(name="Action", value=action, inline=False)
-            embed.add_field(name="Strikes", value=str(strikes), inline=False)
-
-            await log.send(embed=embed)
+        await self.send_log(message, action, strikes, "Duplicate Spam Detected")
 
     # =========================
     # CROSS CHANNEL PUNISH
@@ -256,20 +313,9 @@ class AntiSpam(commands.Cog):
             await message.author.timeout(timedelta(minutes=TIMEOUT_DURATION))
             action = "TIMEOUT"
 
-        log = self.bot.get_channel(LOG_CHANNEL_ID)
-        if log:
-            embed = discord.Embed(
-                title="🚨 Cross-Channel Spam Detected",
-                color=discord.Color.red(),
-                timestamp=now
-            )
+        await self.send_log(message, action, strikes, "Cross-Channel Spam Detected")
 
-            embed.add_field(name="User", value=f"{message.author}", inline=False)
-            embed.add_field(name="Action", value=action, inline=False)
-            embed.add_field(name="Strikes", value=str(strikes), inline=False)
-
-            await log.send(embed=embed)
-
+    # =========================
     @commands.hybrid_command(name="view_strikes")
     async def view_strikes(self, ctx, member: discord.Member):
         strikes = len(self.user_strikes.get(str(member.id), []))
