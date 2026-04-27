@@ -6,6 +6,7 @@ import json
 import os
 import hashlib
 import aiohttp
+import re
 
 LOG_CHANNEL_ID = 1466507799361229003
 
@@ -37,6 +38,32 @@ WHITELIST_ROLE_IDS = [
 
 STRIKE_FILE = "strikes.json"
 
+# =========================
+# SCAM PATTERNS
+# =========================
+
+SCAM_PATTERNS = [
+    r"check\s+my\s+b[i1l][o0]",
+    r"check\s+my\s+pr[o0]f[i1l]le",
+]
+
+SCAM_KEYWORDS = [
+    "free nitro",
+    "claim reward",
+    "steam gift",
+    "gift link",
+    "airdrop",
+    "limited offer",
+]
+
+URL_REGEX = r"(https?:\/\/[^\s]+)"
+
+def normalize_text(text: str):
+    text = text.lower()
+    text = re.sub(r"^#+\s*", "", text)
+    text = text.replace("1", "i").replace("0", "o").replace("l", "i")
+    return text
+
 
 class AntiSpam(commands.Cog):
     def __init__(self, bot):
@@ -46,9 +73,6 @@ class AntiSpam(commands.Cog):
         self.user_strikes = self.load_json()
         self.user_last_attachment_time = {}
 
-    # =========================
-    # JSON
-    # =========================
     def load_json(self):
         if os.path.exists(STRIKE_FILE):
             with open(STRIKE_FILE, "r") as f:
@@ -59,7 +83,6 @@ class AntiSpam(commands.Cog):
         with open(STRIKE_FILE, "w") as f:
             json.dump(self.user_strikes, f)
 
-    # =========================
     def is_whitelisted(self, member):
         return any(role.id in WHITELIST_ROLE_IDS for role in member.roles)
 
@@ -70,7 +93,7 @@ class AntiSpam(commands.Cog):
                 return hashlib.sha256(data).hexdigest()
 
     # =========================
-    # UNIVERSAL LOG FUNCTION
+    # LOG FUNCTION (UNCHANGED)
     # =========================
     async def send_log(self, message, action, strikes, spam_type):
 
@@ -149,7 +172,27 @@ class AntiSpam(commands.Cog):
         now = discord.utils.utcnow()
 
         # =========================
-        # 1. OFF-TOPIC RATE LIMIT
+        # SCAM TEXT DETECTION
+        # =========================
+        if message.content:
+            normalized = normalize_text(message.content)
+
+            for pattern in SCAM_PATTERNS:
+                if re.search(pattern, normalized):
+                    await self.punish_text_scam(message, "Scam Bio/Profile Detected")
+                    return
+
+            for keyword in SCAM_KEYWORDS:
+                if keyword in normalized:
+                    await self.punish_text_scam(message, "Scam Keyword Detected")
+                    return
+
+            if re.search(URL_REGEX, message.content):
+                await self.punish_text_scam(message, "Suspicious Link Detected")
+                return
+
+        # =========================
+        # OFF-TOPIC RATE LIMIT
         # =========================
         if message.channel.id in ATTACHMENT_LIMIT_CHANNELS and message.attachments:
             last_time = self.user_last_attachment_time.get(message.author.id)
@@ -169,7 +212,7 @@ class AntiSpam(commands.Cog):
             self.user_last_attachment_time[message.author.id] = now
 
         # =========================
-        # PREPARE KEY
+        # DUPLICATE + CROSS (UNCHANGED)
         # =========================
         content_key = message.content.strip().lower()
 
@@ -181,9 +224,6 @@ class AntiSpam(commands.Cog):
 
         key = content_key if content_key else "|".join(attachment_hashes)
 
-        # =========================
-        # 2. DUPLICATE SPAM
-        # =========================
         if key:
             self.user_message_history[message.author.id].append({
                 "key": key,
@@ -206,9 +246,6 @@ class AntiSpam(commands.Cog):
             await self.punish_duplicate(message, duplicates)
             return
 
-        # =========================
-        # 3. CROSS CHANNEL SPAM
-        # =========================
         if message.attachments:
 
             for h in attachment_hashes:
@@ -235,10 +272,33 @@ class AntiSpam(commands.Cog):
                     return
 
     # =========================
-    # DUPLICATE PUNISH
+    async def punish_text_scam(self, message, reason):
+
+        now = discord.utils.utcnow()
+
+        try:
+            await message.delete()
+        except:
+            pass
+
+        uid = str(message.author.id)
+        self.user_strikes.setdefault(uid, [])
+
+        self.user_strikes[uid].append(now.isoformat())
+        strikes = len(self.user_strikes[uid])
+        self.save_json()
+
+        if strikes >= MAX_STRIKES:
+            await message.guild.ban(message.author)
+            action = "BANNED"
+        else:
+            await message.author.timeout(timedelta(minutes=TIMEOUT_DURATION))
+            action = "TIMEOUT"
+
+        await self.send_log(message, action, strikes, reason)
+
     # =========================
     async def punish_duplicate(self, message, duplicates):
-
         now = discord.utils.utcnow()
         user_id = message.author.id
 
@@ -253,12 +313,6 @@ class AntiSpam(commands.Cog):
 
         uid = str(user_id)
         self.user_strikes.setdefault(uid, [])
-
-        self.user_strikes[uid] = [
-            t for t in self.user_strikes[uid]
-            if (now - discord.utils.parse_time(t)) < timedelta(minutes=STRIKE_RESET_TIME)
-        ]
-
         self.user_strikes[uid].append(now.isoformat())
         strikes = len(self.user_strikes[uid])
         self.save_json()
@@ -272,11 +326,7 @@ class AntiSpam(commands.Cog):
 
         await self.send_log(message, action, strikes, "Duplicate Spam Detected")
 
-    # =========================
-    # CROSS CHANNEL PUNISH
-    # =========================
     async def punish_cross(self, message, file_hash):
-
         now = discord.utils.utcnow()
         user_id = message.author.id
 
@@ -296,12 +346,6 @@ class AntiSpam(commands.Cog):
 
         uid = str(user_id)
         self.user_strikes.setdefault(uid, [])
-
-        self.user_strikes[uid] = [
-            t for t in self.user_strikes[uid]
-            if (now - discord.utils.parse_time(t)) < timedelta(minutes=STRIKE_RESET_TIME)
-        ]
-
         self.user_strikes[uid].append(now.isoformat())
         strikes = len(self.user_strikes[uid])
         self.save_json()
@@ -315,7 +359,6 @@ class AntiSpam(commands.Cog):
 
         await self.send_log(message, action, strikes, "Cross-Channel Spam Detected")
 
-    # =========================
     @commands.hybrid_command(name="view_strikes")
     async def view_strikes(self, ctx, member: discord.Member):
         strikes = len(self.user_strikes.get(str(member.id), []))
