@@ -187,10 +187,6 @@ class AntiSpam(commands.Cog):
                     await self.punish_text_scam(message, "Scam Keyword Detected")
                     return
 
-            if re.search(URL_REGEX, message.content):
-                await self.punish_text_scam(message, "Suspicious Link Detected")
-                return
-
         # =========================
         # OFF-TOPIC RATE LIMIT
         # =========================
