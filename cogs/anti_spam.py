@@ -7,6 +7,7 @@ import os
 import hashlib
 import aiohttp
 import re
+import asyncio
 
 LOG_CHANNEL_ID = 1466507799361229003
 
@@ -32,6 +33,8 @@ DUPLICATE_THRESHOLD = 3
 WHITELIST_ROLE_IDS = [
     1427543936829882480,
     1464630512294564030,
+    1450921642568978635,
+    1427538203304398878,
     1427554165235646496,
     1482773092890574989
 ]
@@ -62,10 +65,8 @@ URL_REGEX = r"(https?:\/\/[^\s]+)"
 def normalize_text(text: str):
     text = text.lower()
 
-    # remove discord markdown headers
     text = re.sub(r"^#+\s*", "", text)
 
-    # normalize fake letters
     text = text.replace("1", "i")
     text = text.replace("0", "o")
     text = text.replace("l", "i")
@@ -136,6 +137,7 @@ class AntiSpam(commands.Cog):
         strikes = await self.add_strike(member.id, now)
 
         if strikes >= MAX_STRIKES:
+
             await member.guild.ban(
                 member,
                 reason=reason
@@ -143,14 +145,8 @@ class AntiSpam(commands.Cog):
 
             action = "User BANNED"
 
-            await self.send_action_log(
-                member=member,
-                moderator=self.bot.user,
-                action="BANNED",
-                reason=reason
-            )
-
         else:
+
             await member.timeout(
                 timedelta(minutes=TIMEOUT_DURATION),
                 reason=reason
@@ -158,63 +154,130 @@ class AntiSpam(commands.Cog):
 
             action = f"User timed out ({TIMEOUT_DURATION} minutes)"
 
-            await self.send_action_log(
-                member=member,
-                moderator=self.bot.user,
-                action="TIMEOUT",
-                reason=reason
-            )
-
         return strikes, action
 
     # =========================
-    # ACTION LOG
+    # MANUAL MODERATION LOGS
     # =========================
 
-    async def send_action_log(
-        self,
-        member,
-        moderator,
-        action,
-        reason
-    ):
+    @commands.Cog.listener()
+    async def on_member_ban(self, guild, user):
 
-        log_channel = self.bot.get_channel(LOG_CHANNEL_ID)
+        await asyncio.sleep(1)
 
-        if not log_channel:
+        try:
+
+            async for entry in guild.audit_logs(
+                limit=5,
+                action=discord.AuditLogAction.ban
+            ):
+
+                if entry.target.id != user.id:
+                    continue
+
+                moderator = entry.user
+
+                log_channel = self.bot.get_channel(LOG_CHANNEL_ID)
+
+                if log_channel:
+
+                    embed = discord.Embed(
+                        title="🔨 User BANNED",
+                        color=discord.Color.dark_red(),
+                        timestamp=discord.utils.utcnow()
+                    )
+
+                    embed.add_field(
+                        name="User",
+                        value=f"{user} ({user.id})",
+                        inline=False
+                    )
+
+                    embed.add_field(
+                        name="Performed By",
+                        value=f"{moderator} ({moderator.id})",
+                        inline=False
+                    )
+
+                    embed.add_field(
+                        name="Reason",
+                        value=entry.reason or "No reason provided",
+                        inline=False
+                    )
+
+                    await log_channel.send(embed=embed)
+
+                break
+
+        except:
+            pass
+
+    @commands.Cog.listener()
+    async def on_member_update(self, before, after):
+
+        if before.timed_out_until == after.timed_out_until:
             return
 
-        embed = discord.Embed(
-            title=f"🔨 User {action}",
-            color=discord.Color.orange(),
-            timestamp=discord.utils.utcnow()
-        )
+        if after.timed_out_until is None:
+            return
 
-        embed.add_field(
-            name="User",
-            value=f"{member} ({member.id})",
-            inline=False
-        )
+        await asyncio.sleep(1)
 
-        embed.add_field(
-            name="Action",
-            value=action,
-            inline=False
-        )
+        try:
 
-        embed.add_field(
-            name="Performed By",
-            value=f"{moderator}",
-            inline=False
-        )
+            async for entry in after.guild.audit_logs(
+                limit=5,
+                action=discord.AuditLogAction.member_update
+            ):
 
-        embed.add_field(
-            name="Reason",
-            value=reason,
-            inline=False
-        )
+                if entry.target.id != after.id:
+                    continue
 
-        await log_channel.send(embed=embed)
+                moderator = entry.user
+
+                if moderator.bot:
+                    continue
+
+                log_channel = self.bot.get_channel(LOG_CHANNEL_ID)
+
+                if log_channel:
+
+                    embed = discord.Embed(
+                        title="⏳ User TIMEOUT",
+                        color=discord.Color.orange(),
+                        timestamp=discord.utils.utcnow()
+                    )
+
+                    embed.add_field(
+                        name="User",
+                        value=f"{after} ({after.id})",
+                        inline=False
+                    )
+
+                    embed.add_field(
+                        name="Performed By",
+                        value=f"{moderator} ({moderator.id})",
+                        inline=False
+                    )
+
+                    embed.add_field(
+                        name="Timeout Until",
+                        value=f"{after.timed_out_until}",
+                        inline=False
+                    )
+
+                    embed.add_field(
+                        name="Reason",
+                        value=entry.reason or "No reason provided",
+                        inline=False
+                    )
+
+                    await log_channel.send(embed=embed)
+
+                break
+
+        except:
+            pass
 
     # =========================
     # MAIN SPAM LOG
@@ -372,7 +435,7 @@ class AntiSpam(commands.Cog):
             ] = now
 
         # =========================
-        # DUPLICATE MESSAGE DETECTION
+        # DUPLICATE DETECTION
         # =========================
 
         content_key = message.content.strip().lower()
@@ -398,14 +461,12 @@ class AntiSpam(commands.Cog):
                 "message_id": message.id
             })
 
-        # cleanup old messages
         self.user_message_history[message.author.id] = [
             e for e in self.user_message_history[message.author.id]
             if now - e["time"]
             < timedelta(seconds=DUPLICATE_TIME_WINDOW)
         ]
 
-        # same channel duplicate
         duplicates = [
             e for e in self.user_message_history[message.author.id]
             if e["key"] == key
@@ -438,7 +499,6 @@ class AntiSpam(commands.Cog):
                     "message_id": message.id
                 })
 
-            # cleanup old
             self.user_attachment_history[
                 message.author.id
             ] = [
