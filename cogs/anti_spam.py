@@ -7,7 +7,6 @@ import os
 import hashlib
 import aiohttp
 import re
-import asyncio
 
 LOG_CHANNEL_ID = 1466507799361229003
 
@@ -32,9 +31,9 @@ DUPLICATE_THRESHOLD = 3
 
 WHITELIST_ROLE_IDS = [
     1427543936829882480,
-    1464630512294564030,
     1450921642568978635,
     1427538203304398878,
+    1464630512294564030,
     1427554165235646496,
     1482773092890574989
 ]
@@ -65,11 +64,15 @@ URL_REGEX = r"(https?:\/\/[^\s]+)"
 def normalize_text(text: str):
     text = text.lower()
 
+    # remove markdown headers
     text = re.sub(r"^#+\s*", "", text)
 
-    text = text.replace("1", "i")
-    text = text.replace("0", "o")
-    text = text.replace("l", "i")
+    # replace scam bypass chars
+    text = (
+        text.replace("1", "i")
+        .replace("0", "o")
+        .replace("l", "i")
+    )
 
     return text
 
@@ -80,7 +83,6 @@ class AntiSpam(commands.Cog):
 
         self.user_attachment_history = defaultdict(list)
         self.user_message_history = defaultdict(list)
-
         self.user_strikes = self.load_json()
 
         self.user_last_attachment_time = {}
@@ -100,19 +102,26 @@ class AntiSpam(commands.Cog):
             json.dump(self.user_strikes, f)
 
     # =========================
-    # UTILS
+    # HELPERS
     # =========================
 
     def is_whitelisted(self, member):
         return any(role.id in WHITELIST_ROLE_IDS for role in member.roles)
 
     async def get_file_hash(self, url):
+
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as response:
                 data = await response.read()
                 return hashlib.sha256(data).hexdigest()
 
-    async def add_strike(self, user_id, now):
+    # =========================
+    # STRIKES
+    # =========================
+
+    def add_strike(self, user_id):
+
+        now = discord.utils.utcnow()
 
         uid = str(user_id)
 
@@ -121,7 +130,7 @@ class AntiSpam(commands.Cog):
         self.user_strikes[uid] = [
             t for t in self.user_strikes[uid]
             if (now - discord.utils.parse_time(t))
-            < timedelta(minutes=STRIKE_RESET_TIME)
+            < timedelta(seconds=STRIKE_RESET_TIME)
         ]
 
         self.user_strikes[uid].append(now.isoformat())
@@ -130,157 +139,8 @@ class AntiSpam(commands.Cog):
 
         return len(self.user_strikes[uid])
 
-    async def punish_user(self, member, reason):
-
-        now = discord.utils.utcnow()
-
-        strikes = await self.add_strike(member.id, now)
-
-        if strikes >= MAX_STRIKES:
-
-            await member.guild.ban(
-                member,
-                reason=reason
-            )
-
-            action = "User BANNED"
-
-        else:
-
-            await member.timeout(
-                timedelta(minutes=TIMEOUT_DURATION),
-                reason=reason
-            )
-
-            action = f"User timed out ({TIMEOUT_DURATION} minutes)"
-
-        return strikes, action
-
     # =========================
-    # MANUAL MODERATION LOGS
-    # =========================
-
-    @commands.Cog.listener()
-    async def on_member_ban(self, guild, user):
-
-        await asyncio.sleep(1)
-
-        try:
-
-            async for entry in guild.audit_logs(
-                limit=5,
-                action=discord.AuditLogAction.ban
-            ):
-
-                if entry.target.id != user.id:
-                    continue
-
-                moderator = entry.user
-
-                log_channel = self.bot.get_channel(LOG_CHANNEL_ID)
-
-                if log_channel:
-
-                    embed = discord.Embed(
-                        title="🔨 User BANNED",
-                        color=discord.Color.dark_red(),
-                        timestamp=discord.utils.utcnow()
-                    )
-
-                    embed.add_field(
-                        name="User",
-                        value=f"{user} ({user.id})",
-                        inline=False
-                    )
-
-                    embed.add_field(
-                        name="Performed By",
-                        value=f"{moderator} ({moderator.id})",
-                        inline=False
-                    )
-
-                    embed.add_field(
-                        name="Reason",
-                        value=entry.reason or "No reason provided",
-                        inline=False
-                    )
-
-                    await log_channel.send(embed=embed)
-
-                break
-
-        except:
-            pass
-
-    @commands.Cog.listener()
-    async def on_member_update(self, before, after):
-
-        if before.timed_out_until == after.timed_out_until:
-            return
-
-        if after.timed_out_until is None:
-            return
-
-        await asyncio.sleep(1)
-
-        try:
-
-            async for entry in after.guild.audit_logs(
-                limit=5,
-                action=discord.AuditLogAction.member_update
-            ):
-
-                if entry.target.id != after.id:
-                    continue
-
-                moderator = entry.user
-
-                if moderator.bot:
-                    continue
-
-                log_channel = self.bot.get_channel(LOG_CHANNEL_ID)
-
-                if log_channel:
-
-                    embed = discord.Embed(
-                        title="⏳ User TIMEOUT",
-                        color=discord.Color.orange(),
-                        timestamp=discord.utils.utcnow()
-                    )
-
-                    embed.add_field(
-                        name="User",
-                        value=f"{after} ({after.id})",
-                        inline=False
-                    )
-
-                    embed.add_field(
-                        name="Performed By",
-                        value=f"{moderator} ({moderator.id})",
-                        inline=False
-                    )
-
-                    embed.add_field(
-                        name="Timeout Until",
-                        value=f"{after.timed_out_until}",
-                        inline=False
-                    )
-
-                    embed.add_field(
-                        name="Reason",
-                        value=entry.reason or "No reason provided",
-                        inline=False
-                    )
-
-                    await log_channel.send(embed=embed)
-
-                break
-
-        except:
-            pass
-
-    # =========================
-    # MAIN SPAM LOG
+    # LOG EMBED
     # =========================
 
     async def send_log(
@@ -301,61 +161,62 @@ class AntiSpam(commands.Cog):
 
         log = self.bot.get_channel(LOG_CHANNEL_ID)
 
-        if log:
+        if not log:
+            return
 
-            embed = discord.Embed(
-                title=f"🚨 {spam_type}",
-                color=discord.Color.red(),
-                timestamp=now
-            )
+        embed = discord.Embed(
+            title=f"🚨 {spam_type}",
+            color=discord.Color.red(),
+            timestamp=now
+        )
 
+        embed.add_field(
+            name="User",
+            value=f"{message.author} ({message.author.id})",
+            inline=False
+        )
+
+        embed.add_field(
+            name="Reason",
+            value=spam_type,
+            inline=False
+        )
+
+        embed.add_field(
+            name="Action",
+            value=action,
+            inline=False
+        )
+
+        embed.add_field(
+            name="Strike Count",
+            value=str(strikes),
+            inline=False
+        )
+
+        embed.add_field(
+            name="Message Content",
+            value=content[:1000],
+            inline=False
+        )
+
+        if attachments:
             embed.add_field(
-                name="User",
-                value=f"{message.author} ({message.author.id})",
+                name="Attachment URLs",
+                value="\n".join(attachments),
                 inline=False
             )
 
-            embed.add_field(
-                name="Reason",
-                value=spam_type,
-                inline=False
-            )
+        embed.add_field(
+            name="Jump Link",
+            value=jump,
+            inline=False
+        )
 
-            embed.add_field(
-                name="Action",
-                value=action,
-                inline=False
-            )
-
-            embed.add_field(
-                name="Strike Count",
-                value=str(strikes),
-                inline=False
-            )
-
-            embed.add_field(
-                name="Message Content",
-                value=content[:1000],
-                inline=False
-            )
-
-            if attachments:
-                embed.add_field(
-                    name="Attachment URLs",
-                    value="\n".join(attachments),
-                    inline=False
-                )
-
-            embed.add_field(
-                name="Jump Link",
-                value=jump,
-                inline=False
-            )
-
-            await log.send(embed=embed)
+        await log.send(embed=embed)
 
     # =========================
-    # MAIN EVENT
+    # MAIN MESSAGE EVENT
     # =========================
 
     @commands.Cog.listener()
@@ -385,7 +246,6 @@ class AntiSpam(commands.Cog):
                         message,
                         "Scam Bio/Profile Detected"
                     )
-
                     return
 
             for keyword in SCAM_KEYWORDS:
@@ -396,11 +256,10 @@ class AntiSpam(commands.Cog):
                         message,
                         "Scam Keyword Detected"
                     )
-
                     return
 
         # =========================
-        # OFF-TOPIC ATTACHMENT LIMIT
+        # ATTACHMENT RATE LIMIT
         # =========================
 
         if (
@@ -415,7 +274,9 @@ class AntiSpam(commands.Cog):
             if (
                 last_time
                 and (now - last_time)
-                < timedelta(minutes=ATTACHMENT_COOLDOWN_MINUTES)
+                < timedelta(
+                    minutes=ATTACHMENT_COOLDOWN_MINUTES
+                )
             ):
 
                 try:
@@ -435,7 +296,7 @@ class AntiSpam(commands.Cog):
             ] = now
 
         # =========================
-        # DUPLICATE DETECTION
+        # DUPLICATE SPAM
         # =========================
 
         content_key = message.content.strip().lower()
@@ -445,10 +306,16 @@ class AntiSpam(commands.Cog):
         if message.attachments:
 
             for att in message.attachments:
+
                 h = await self.get_file_hash(att.url)
+
                 attachment_hashes.append(h)
 
-        key = content_key if content_key else "|".join(attachment_hashes)
+        key = (
+            content_key
+            if content_key
+            else "|".join(attachment_hashes)
+        )
 
         if key:
 
@@ -461,16 +328,30 @@ class AntiSpam(commands.Cog):
                 "message_id": message.id
             })
 
-        self.user_message_history[message.author.id] = [
-            e for e in self.user_message_history[message.author.id]
+        self.user_message_history[
+            message.author.id
+        ] = [
+
+            e
+            for e in self.user_message_history[
+                message.author.id
+            ]
+
             if now - e["time"]
             < timedelta(seconds=DUPLICATE_TIME_WINDOW)
         ]
 
         duplicates = [
-            e for e in self.user_message_history[message.author.id]
-            if e["key"] == key
-            and e["channel"] == message.channel.id
+
+            e
+            for e in self.user_message_history[
+                message.author.id
+            ]
+
+            if (
+                e["key"] == key
+                and e["channel"] == message.channel.id
+            )
         ]
 
         if len(duplicates) >= DUPLICATE_THRESHOLD:
@@ -483,7 +364,7 @@ class AntiSpam(commands.Cog):
             return
 
         # =========================
-        # CROSS CHANNEL DETECTION
+        # CROSS CHANNEL SPAM
         # =========================
 
         if message.attachments:
@@ -502,11 +383,16 @@ class AntiSpam(commands.Cog):
             self.user_attachment_history[
                 message.author.id
             ] = [
-                e for e in self.user_attachment_history[
+
+                e
+                for e in self.user_attachment_history[
                     message.author.id
                 ]
+
                 if now - e["time"]
-                < timedelta(seconds=TIME_WINDOW_SECONDS)
+                < timedelta(
+                    seconds=TIME_WINDOW_SECONDS
+                )
             ]
 
             hashes = defaultdict(set)
@@ -514,7 +400,10 @@ class AntiSpam(commands.Cog):
             for entry in self.user_attachment_history[
                 message.author.id
             ]:
-                hashes[entry["hash"]].add(entry["channel"])
+
+                hashes[
+                    entry["hash"]
+                ].add(entry["channel"])
 
             for h, channels in hashes.items():
 
@@ -542,10 +431,30 @@ class AntiSpam(commands.Cog):
         except:
             pass
 
-        strikes, action = await self.punish_user(
-            message.author,
-            reason
+        strikes = self.add_strike(
+            message.author.id
         )
+
+        if strikes >= MAX_STRIKES:
+
+            await message.guild.ban(
+                message.author
+            )
+
+            action = "BANNED"
+
+        else:
+
+            await message.author.timeout(
+                timedelta(
+                    minutes=TIMEOUT_DURATION
+                )
+            )
+
+            action = (
+                f"User timed out "
+                f"({TIMEOUT_DURATION} minutes)"
+            )
 
         await self.send_log(
             message,
@@ -569,6 +478,7 @@ class AntiSpam(commands.Cog):
             if channel:
 
                 try:
+
                     msg = await channel.fetch_message(
                         entry["message_id"]
                     )
@@ -578,10 +488,30 @@ class AntiSpam(commands.Cog):
                 except:
                     pass
 
-        strikes, action = await self.punish_user(
-            message.author,
-            "Duplicate Spam Detected"
+        strikes = self.add_strike(
+            message.author.id
         )
+
+        if strikes >= MAX_STRIKES:
+
+            await message.guild.ban(
+                message.author
+            )
+
+            action = "BANNED"
+
+        else:
+
+            await message.author.timeout(
+                timedelta(
+                    minutes=TIMEOUT_DURATION
+                )
+            )
+
+            action = (
+                f"User timed out "
+                f"({TIMEOUT_DURATION} minutes)"
+            )
 
         await self.send_log(
             message,
@@ -597,9 +527,12 @@ class AntiSpam(commands.Cog):
     ):
 
         related = [
-            e for e in self.user_attachment_history[
+
+            e
+            for e in self.user_attachment_history[
                 message.author.id
             ]
+
             if e["hash"] == file_hash
         ]
 
@@ -612,6 +545,7 @@ class AntiSpam(commands.Cog):
             if channel:
 
                 try:
+
                     msg = await channel.fetch_message(
                         entry["message_id"]
                     )
@@ -621,10 +555,30 @@ class AntiSpam(commands.Cog):
                 except:
                     pass
 
-        strikes, action = await self.punish_user(
-            message.author,
-            "Cross-Channel Spam Detected"
+        strikes = self.add_strike(
+            message.author.id
         )
+
+        if strikes >= MAX_STRIKES:
+
+            await message.guild.ban(
+                message.author
+            )
+
+            action = "BANNED"
+
+        else:
+
+            await message.author.timeout(
+                timedelta(
+                    minutes=TIMEOUT_DURATION
+                )
+            )
+
+            action = (
+                f"User timed out "
+                f"({TIMEOUT_DURATION} minutes)"
+            )
 
         await self.send_log(
             message,
@@ -634,10 +588,149 @@ class AntiSpam(commands.Cog):
         )
 
     # =========================
+    # MANUAL MOD LOGS
+    # =========================
+
+    @commands.Cog.listener()
+    async def on_member_ban(
+        self,
+        guild,
+        user
+    ):
+
+        log_channel = self.bot.get_channel(
+            LOG_CHANNEL_ID
+        )
+
+        if not log_channel:
+            return
+
+        moderator = "Unknown"
+
+        try:
+
+            async for entry in guild.audit_logs(
+                limit=5,
+                action=discord.AuditLogAction.ban
+            ):
+
+                if entry.target.id == user.id:
+
+                    moderator = (
+                        f"{entry.user} "
+                        f"({entry.user.id})"
+                    )
+
+                    break
+
+        except:
+            pass
+
+        embed = discord.Embed(
+            title="🔨 User Banned",
+            color=discord.Color.dark_red(),
+            timestamp=discord.utils.utcnow()
+        )
+
+        embed.add_field(
+            name="User",
+            value=f"{user} ({user.id})",
+            inline=False
+        )
+
+        embed.add_field(
+            name="Banned By",
+            value=moderator,
+            inline=False
+        )
+
+        await log_channel.send(embed=embed)
+
+    @commands.Cog.listener()
+    async def on_member_update(
+        self,
+        before,
+        after
+    ):
+
+        before_timeout = before.timed_out_until
+        after_timeout = after.timed_out_until
+
+        if (
+            before_timeout != after_timeout
+            and after_timeout is not None
+        ):
+
+            log_channel = self.bot.get_channel(
+                LOG_CHANNEL_ID
+            )
+
+            if not log_channel:
+                return
+
+            moderator = "Unknown"
+
+            try:
+
+                async for entry in after.guild.audit_logs(
+                    limit=5,
+                    action=discord.AuditLogAction.member_update
+                ):
+
+                    if entry.target.id == after.id:
+
+                        moderator = (
+                            f"{entry.user} "
+                            f"({entry.user.id})"
+                        )
+
+                        break
+
+            except:
+                pass
+
+            remaining = (
+                after_timeout
+                - discord.utils.utcnow()
+            )
+
+            minutes = int(
+                remaining.total_seconds() / 60
+            )
+
+            embed = discord.Embed(
+                title="⏳ User Timed Out",
+                color=discord.Color.orange(),
+                timestamp=discord.utils.utcnow()
+            )
+
+            embed.add_field(
+                name="User",
+                value=f"{after} ({after.id})",
+                inline=False
+            )
+
+            embed.add_field(
+                name="Timed Out By",
+                value=moderator,
+                inline=False
+            )
+
+            embed.add_field(
+                name="Duration",
+                value=f"{minutes} minute(s)",
+                inline=False
+            )
+
+            await log_channel.send(embed=embed)
+
+    # =========================
     # COMMANDS
     # =========================
 
-    @commands.hybrid_command(name="view_strikes")
+    @commands.hybrid_command(
+        name="view_strikes"
+    )
     async def view_strikes(
         self,
         ctx,
@@ -652,7 +745,8 @@ class AntiSpam(commands.Cog):
         )
 
         await ctx.send(
-            f"{member.mention} has {strikes} strike(s).",
+            f"{member.mention} has "
+            f"{strikes} strike(s).",
             ephemeral=True
         )
 
