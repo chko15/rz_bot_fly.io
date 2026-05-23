@@ -58,20 +58,35 @@ SCAM_KEYWORDS = [
 
 URL_REGEX = r"(https?:\/\/[^\s]+)"
 
+
 def normalize_text(text: str):
     text = text.lower()
+
+    # remove discord markdown headers
     text = re.sub(r"^#+\s*", "", text)
-    text = text.replace("1", "i").replace("0", "o").replace("l", "i")
+
+    # normalize fake letters
+    text = text.replace("1", "i")
+    text = text.replace("0", "o")
+    text = text.replace("l", "i")
+
     return text
 
 
 class AntiSpam(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+
         self.user_attachment_history = defaultdict(list)
         self.user_message_history = defaultdict(list)
+
         self.user_strikes = self.load_json()
+
         self.user_last_attachment_time = {}
+
+    # =========================
+    # JSON
+    # =========================
 
     def load_json(self):
         if os.path.exists(STRIKE_FILE):
@@ -83,6 +98,10 @@ class AntiSpam(commands.Cog):
         with open(STRIKE_FILE, "w") as f:
             json.dump(self.user_strikes, f)
 
+    # =========================
+    # UTILS
+    # =========================
+
     def is_whitelisted(self, member):
         return any(role.id in WHITELIST_ROLE_IDS for role in member.roles)
 
@@ -92,20 +111,135 @@ class AntiSpam(commands.Cog):
                 data = await response.read()
                 return hashlib.sha256(data).hexdigest()
 
+    async def add_strike(self, user_id, now):
+
+        uid = str(user_id)
+
+        self.user_strikes.setdefault(uid, [])
+
+        self.user_strikes[uid] = [
+            t for t in self.user_strikes[uid]
+            if (now - discord.utils.parse_time(t))
+            < timedelta(minutes=STRIKE_RESET_TIME)
+        ]
+
+        self.user_strikes[uid].append(now.isoformat())
+
+        self.save_json()
+
+        return len(self.user_strikes[uid])
+
+    async def punish_user(self, member, reason):
+
+        now = discord.utils.utcnow()
+
+        strikes = await self.add_strike(member.id, now)
+
+        if strikes >= MAX_STRIKES:
+            await member.guild.ban(
+                member,
+                reason=reason
+            )
+
+            action = "User BANNED"
+
+            await self.send_action_log(
+                member=member,
+                moderator=self.bot.user,
+                action="BANNED",
+                reason=reason
+            )
+
+        else:
+            await member.timeout(
+                timedelta(minutes=TIMEOUT_DURATION),
+                reason=reason
+            )
+
+            action = f"User timed out ({TIMEOUT_DURATION} minutes)"
+
+            await self.send_action_log(
+                member=member,
+                moderator=self.bot.user,
+                action="TIMEOUT",
+                reason=reason
+            )
+
+        return strikes, action
+
     # =========================
-    # LOG FUNCTION (UNCHANGED)
+    # ACTION LOG
     # =========================
-    async def send_log(self, message, action, strikes, spam_type):
+
+    async def send_action_log(
+        self,
+        member,
+        moderator,
+        action,
+        reason
+    ):
+
+        log_channel = self.bot.get_channel(LOG_CHANNEL_ID)
+
+        if not log_channel:
+            return
+
+        embed = discord.Embed(
+            title=f"🔨 User {action}",
+            color=discord.Color.orange(),
+            timestamp=discord.utils.utcnow()
+        )
+
+        embed.add_field(
+            name="User",
+            value=f"{member} ({member.id})",
+            inline=False
+        )
+
+        embed.add_field(
+            name="Action",
+            value=action,
+            inline=False
+        )
+
+        embed.add_field(
+            name="Performed By",
+            value=f"{moderator}",
+            inline=False
+        )
+
+        embed.add_field(
+            name="Reason",
+            value=reason,
+            inline=False
+        )
+
+        await log_channel.send(embed=embed)
+
+    # =========================
+    # MAIN SPAM LOG
+    # =========================
+
+    async def send_log(
+        self,
+        message,
+        action,
+        strikes,
+        spam_type
+    ):
 
         now = discord.utils.utcnow()
 
         content = message.content or "No text"
+
         attachments = [a.url for a in message.attachments]
+
         jump = message.jump_url
 
         log = self.bot.get_channel(LOG_CHANNEL_ID)
 
         if log:
+
             embed = discord.Embed(
                 title=f"🚨 {spam_type}",
                 color=discord.Color.red(),
@@ -160,6 +294,7 @@ class AntiSpam(commands.Cog):
     # =========================
     # MAIN EVENT
     # =========================
+
     @commands.Cog.listener()
     async def on_message(self, message):
 
@@ -174,26 +309,52 @@ class AntiSpam(commands.Cog):
         # =========================
         # SCAM TEXT DETECTION
         # =========================
+
         if message.content:
+
             normalized = normalize_text(message.content)
 
             for pattern in SCAM_PATTERNS:
+
                 if re.search(pattern, normalized):
-                    await self.punish_text_scam(message, "Scam Bio/Profile Detected")
+
+                    await self.punish_text_scam(
+                        message,
+                        "Scam Bio/Profile Detected"
+                    )
+
                     return
 
             for keyword in SCAM_KEYWORDS:
+
                 if keyword in normalized:
-                    await self.punish_text_scam(message, "Scam Keyword Detected")
+
+                    await self.punish_text_scam(
+                        message,
+                        "Scam Keyword Detected"
+                    )
+
                     return
 
         # =========================
-        # OFF-TOPIC RATE LIMIT
+        # OFF-TOPIC ATTACHMENT LIMIT
         # =========================
-        if message.channel.id in ATTACHMENT_LIMIT_CHANNELS and message.attachments:
-            last_time = self.user_last_attachment_time.get(message.author.id)
 
-            if last_time and (now - last_time) < timedelta(minutes=ATTACHMENT_COOLDOWN_MINUTES):
+        if (
+            message.channel.id in ATTACHMENT_LIMIT_CHANNELS
+            and message.attachments
+        ):
+
+            last_time = self.user_last_attachment_time.get(
+                message.author.id
+            )
+
+            if (
+                last_time
+                and (now - last_time)
+                < timedelta(minutes=ATTACHMENT_COOLDOWN_MINUTES)
+            ):
+
                 try:
                     await message.delete()
                 except:
@@ -203,17 +364,23 @@ class AntiSpam(commands.Cog):
                     f"{message.author.mention} No Spam Attachment.",
                     delete_after=5
                 )
+
                 return
 
-            self.user_last_attachment_time[message.author.id] = now
+            self.user_last_attachment_time[
+                message.author.id
+            ] = now
 
         # =========================
-        # DUPLICATE + CROSS (UNCHANGED)
+        # DUPLICATE MESSAGE DETECTION
         # =========================
+
         content_key = message.content.strip().lower()
 
         attachment_hashes = []
+
         if message.attachments:
+
             for att in message.attachments:
                 h = await self.get_file_hash(att.url)
                 attachment_hashes.append(h)
@@ -221,144 +388,213 @@ class AntiSpam(commands.Cog):
         key = content_key if content_key else "|".join(attachment_hashes)
 
         if key:
-            self.user_message_history[message.author.id].append({
+
+            self.user_message_history[
+                message.author.id
+            ].append({
                 "key": key,
                 "time": now,
                 "channel": message.channel.id,
                 "message_id": message.id
             })
 
+        # cleanup old messages
         self.user_message_history[message.author.id] = [
             e for e in self.user_message_history[message.author.id]
-            if now - e["time"] < timedelta(seconds=DUPLICATE_TIME_WINDOW)
+            if now - e["time"]
+            < timedelta(seconds=DUPLICATE_TIME_WINDOW)
         ]
 
+        # same channel duplicate
         duplicates = [
             e for e in self.user_message_history[message.author.id]
-            if e["key"] == key and e["channel"] == message.channel.id
+            if e["key"] == key
+            and e["channel"] == message.channel.id
         ]
 
         if len(duplicates) >= DUPLICATE_THRESHOLD:
-            await self.punish_duplicate(message, duplicates)
+
+            await self.punish_duplicate(
+                message,
+                duplicates
+            )
+
             return
+
+        # =========================
+        # CROSS CHANNEL DETECTION
+        # =========================
 
         if message.attachments:
 
             for h in attachment_hashes:
-                self.user_attachment_history[message.author.id].append({
+
+                self.user_attachment_history[
+                    message.author.id
+                ].append({
                     "hash": h,
                     "channel": message.channel.id,
                     "time": now,
                     "message_id": message.id
                 })
 
-            self.user_attachment_history[message.author.id] = [
-                e for e in self.user_attachment_history[message.author.id]
-                if now - e["time"] < timedelta(seconds=TIME_WINDOW_SECONDS)
+            # cleanup old
+            self.user_attachment_history[
+                message.author.id
+            ] = [
+                e for e in self.user_attachment_history[
+                    message.author.id
+                ]
+                if now - e["time"]
+                < timedelta(seconds=TIME_WINDOW_SECONDS)
             ]
 
             hashes = defaultdict(set)
 
-            for entry in self.user_attachment_history[message.author.id]:
+            for entry in self.user_attachment_history[
+                message.author.id
+            ]:
                 hashes[entry["hash"]].add(entry["channel"])
 
             for h, channels in hashes.items():
+
                 if len(channels) >= MIN_CHANNEL_SPREAD:
-                    await self.punish_cross(message, h)
+
+                    await self.punish_cross(
+                        message,
+                        h
+                    )
+
                     return
 
     # =========================
-    async def punish_text_scam(self, message, reason):
+    # PUNISHMENTS
+    # =========================
 
-        now = discord.utils.utcnow()
+    async def punish_text_scam(
+        self,
+        message,
+        reason
+    ):
 
         try:
             await message.delete()
         except:
             pass
 
-        uid = str(message.author.id)
-        self.user_strikes.setdefault(uid, [])
+        strikes, action = await self.punish_user(
+            message.author,
+            reason
+        )
 
-        self.user_strikes[uid].append(now.isoformat())
-        strikes = len(self.user_strikes[uid])
-        self.save_json()
+        await self.send_log(
+            message,
+            action,
+            strikes,
+            reason
+        )
 
-        if strikes >= MAX_STRIKES:
-            await message.guild.ban(message.author)
-            action = "BANNED"
-        else:
-            await message.author.timeout(timedelta(minutes=TIMEOUT_DURATION))
-            action = "TIMEOUT"
-
-        await self.send_log(message, action, strikes, reason)
-
-    # =========================
-    async def punish_duplicate(self, message, duplicates):
-        now = discord.utils.utcnow()
-        user_id = message.author.id
+    async def punish_duplicate(
+        self,
+        message,
+        duplicates
+    ):
 
         for entry in duplicates:
-            channel = message.guild.get_channel(entry["channel"])
+
+            channel = message.guild.get_channel(
+                entry["channel"]
+            )
+
             if channel:
+
                 try:
-                    msg = await channel.fetch_message(entry["message_id"])
+                    msg = await channel.fetch_message(
+                        entry["message_id"]
+                    )
+
                     await msg.delete()
+
                 except:
                     pass
 
-        uid = str(user_id)
-        self.user_strikes.setdefault(uid, [])
-        self.user_strikes[uid].append(now.isoformat())
-        strikes = len(self.user_strikes[uid])
-        self.save_json()
+        strikes, action = await self.punish_user(
+            message.author,
+            "Duplicate Spam Detected"
+        )
 
-        if strikes >= MAX_STRIKES:
-            await message.guild.ban(message.author)
-            action = "BANNED"
-        else:
-            await message.author.timeout(timedelta(minutes=TIMEOUT_DURATION))
-            action = "TIMEOUT"
+        await self.send_log(
+            message,
+            action,
+            strikes,
+            "Duplicate Spam Detected"
+        )
 
-        await self.send_log(message, action, strikes, "Duplicate Spam Detected")
-
-    async def punish_cross(self, message, file_hash):
-        now = discord.utils.utcnow()
-        user_id = message.author.id
+    async def punish_cross(
+        self,
+        message,
+        file_hash
+    ):
 
         related = [
-            e for e in self.user_attachment_history[user_id]
+            e for e in self.user_attachment_history[
+                message.author.id
+            ]
             if e["hash"] == file_hash
         ]
 
         for entry in related:
-            channel = message.guild.get_channel(entry["channel"])
+
+            channel = message.guild.get_channel(
+                entry["channel"]
+            )
+
             if channel:
+
                 try:
-                    msg = await channel.fetch_message(entry["message_id"])
+                    msg = await channel.fetch_message(
+                        entry["message_id"]
+                    )
+
                     await msg.delete()
+
                 except:
                     pass
 
-        uid = str(user_id)
-        self.user_strikes.setdefault(uid, [])
-        self.user_strikes[uid].append(now.isoformat())
-        strikes = len(self.user_strikes[uid])
-        self.save_json()
+        strikes, action = await self.punish_user(
+            message.author,
+            "Cross-Channel Spam Detected"
+        )
 
-        if strikes >= MAX_STRIKES:
-            await message.guild.ban(message.author)
-            action = "BANNED"
-        else:
-            await message.author.timeout(timedelta(minutes=TIMEOUT_DURATION))
-            action = "TIMEOUT"
+        await self.send_log(
+            message,
+            action,
+            strikes,
+            "Cross-Channel Spam Detected"
+        )
 
-        await self.send_log(message, action, strikes, "Cross-Channel Spam Detected")
+    # =========================
+    # COMMANDS
+    # =========================
 
     @commands.hybrid_command(name="view_strikes")
-    async def view_strikes(self, ctx, member: discord.Member):
-        strikes = len(self.user_strikes.get(str(member.id), []))
-        await ctx.send(f"{member.mention} has {strikes} strike(s).", ephemeral=True)
+    async def view_strikes(
+        self,
+        ctx,
+        member: discord.Member
+    ):
+
+        strikes = len(
+            self.user_strikes.get(
+                str(member.id),
+                []
+            )
+        )
+
+        await ctx.send(
+            f"{member.mention} has {strikes} strike(s).",
+            ephemeral=True
+        )
 
 
 async def setup(bot):
