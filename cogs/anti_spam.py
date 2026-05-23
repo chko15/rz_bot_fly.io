@@ -64,8 +64,14 @@ URL_REGEX = r"(https?:\/\/[^\s]+)"
 
 def normalize_text(text: str):
     text = text.lower()
+
+    # remove discord markdown headers
     text = re.sub(r"^#+\s*", "", text)
-    text = text.replace("1", "i").replace("0", "o").replace("l", "i")
+
+    text = text.replace("1", "i")
+    text = text.replace("0", "o")
+    text = text.replace("l", "i")
+
     return text
 
 
@@ -73,57 +79,45 @@ class AntiSpam(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
+
         self.user_attachment_history = defaultdict(list)
         self.user_message_history = defaultdict(list)
+
         self.user_strikes = self.load_json()
+
         self.user_last_attachment_time = {}
 
-    # =========================
-    # JSON
-    # =========================
+    # =========================================================
 
     def load_json(self):
+
         if os.path.exists(STRIKE_FILE):
             with open(STRIKE_FILE, "r") as f:
                 return json.load(f)
+
         return {}
 
     def save_json(self):
+
         with open(STRIKE_FILE, "w") as f:
             json.dump(self.user_strikes, f)
 
-    # =========================
-    # WHITELIST
-    # =========================
-
     def is_whitelisted(self, member):
-        return any(role.id in WHITELIST_ROLE_IDS for role in member.roles)
 
-    # =========================
-    # HASH
-    # =========================
+        return any(role.id in WHITELIST_ROLE_IDS for role in member.roles)
 
     async def get_file_hash(self, url):
 
         async with aiohttp.ClientSession() as session:
-
             async with session.get(url) as response:
-
                 data = await response.read()
-
                 return hashlib.sha256(data).hexdigest()
 
-    # =========================
-    # SEND LOG
-    # =========================
+    # =========================================================
+    # LOG EMBED
+    # =========================================================
 
-    async def send_log(
-        self,
-        message,
-        action,
-        strikes,
-        spam_type
-    ):
+    async def send_log(self, message, action, strikes, spam_type):
 
         now = discord.utils.utcnow()
 
@@ -189,9 +183,9 @@ class AntiSpam(commands.Cog):
 
         await log.send(embed=embed)
 
-    # =========================
+    # =========================================================
     # MAIN MESSAGE EVENT
-    # =========================
+    # =========================================================
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -204,9 +198,9 @@ class AntiSpam(commands.Cog):
 
         now = discord.utils.utcnow()
 
-        # =========================
+        # =====================================================
         # SCAM TEXT DETECTION
-        # =========================
+        # =====================================================
 
         if message.content:
 
@@ -234,9 +228,9 @@ class AntiSpam(commands.Cog):
 
                     return
 
-        # =========================
+        # =====================================================
         # ATTACHMENT RATE LIMIT
-        # =========================
+        # =====================================================
 
         if (
             message.channel.id in ATTACHMENT_LIMIT_CHANNELS
@@ -249,7 +243,8 @@ class AntiSpam(commands.Cog):
 
             if (
                 last_time
-                and (now - last_time)
+                and
+                (now - last_time)
                 < timedelta(minutes=ATTACHMENT_COOLDOWN_MINUTES)
             ):
 
@@ -265,13 +260,11 @@ class AntiSpam(commands.Cog):
 
                 return
 
-            self.user_last_attachment_time[
-                message.author.id
-            ] = now
+            self.user_last_attachment_time[message.author.id] = now
 
-        # =========================
+        # =====================================================
         # DUPLICATE DETECTION
-        # =========================
+        # =====================================================
 
         content_key = message.content.strip().lower()
 
@@ -285,55 +278,45 @@ class AntiSpam(commands.Cog):
 
                 attachment_hashes.append(h)
 
-        key = (
-            content_key
-            if content_key
-            else "|".join(attachment_hashes)
-        )
+        key = content_key if content_key else "|".join(attachment_hashes)
 
         if key:
 
-            self.user_message_history[
-                message.author.id
-            ].append({
+            self.user_message_history[message.author.id].append({
                 "key": key,
                 "time": now,
                 "channel": message.channel.id,
                 "message_id": message.id
             })
 
-        self.user_message_history[
-            message.author.id
-        ] = [
-            e for e in self.user_message_history[
-                message.author.id
-            ]
+        self.user_message_history[message.author.id] = [
+
+            e for e in self.user_message_history[message.author.id]
+
             if now - e["time"]
             < timedelta(seconds=DUPLICATE_TIME_WINDOW)
         ]
 
         duplicates = [
-            e for e in self.user_message_history[
-                message.author.id
-            ]
+
+            e for e in self.user_message_history[message.author.id]
+
             if (
                 e["key"] == key
-                and e["channel"] == message.channel.id
+                and
+                e["channel"] == message.channel.id
             )
         ]
 
         if len(duplicates) >= DUPLICATE_THRESHOLD:
 
-            await self.punish_duplicate(
-                message,
-                duplicates
-            )
+            await self.punish_duplicate(message, duplicates)
 
             return
 
-        # =========================
-        # CROSS CHANNEL DETECTION
-        # =========================
+        # =====================================================
+        # CROSS CHANNEL IMAGE SPAM
+        # =====================================================
 
         if message.attachments:
 
@@ -342,6 +325,7 @@ class AntiSpam(commands.Cog):
                 self.user_attachment_history[
                     message.author.id
                 ].append({
+
                     "hash": h,
                     "channel": message.channel.id,
                     "time": now,
@@ -351,9 +335,11 @@ class AntiSpam(commands.Cog):
             self.user_attachment_history[
                 message.author.id
             ] = [
+
                 e for e in self.user_attachment_history[
                     message.author.id
                 ]
+
                 if now - e["time"]
                 < timedelta(seconds=TIME_WINDOW_SECONDS)
             ]
@@ -372,49 +358,49 @@ class AntiSpam(commands.Cog):
 
                 if len(channels) >= MIN_CHANNEL_SPREAD:
 
-                    await self.punish_cross(
-                        message,
-                        h
-                    )
+                    await self.punish_cross(message, h)
 
                     return
 
-    # =========================
-    # TEXT SCAM
-    # =========================
+    # =========================================================
 
-    async def punish_text_scam(
-        self,
-        message,
-        reason
-    ):
+    async def add_strike(self, user_id):
 
         now = discord.utils.utcnow()
+
+        uid = str(user_id)
+
+        self.user_strikes.setdefault(uid, [])
+
+        self.user_strikes[uid] = [
+
+            t for t in self.user_strikes[uid]
+
+            if (
+                now - discord.utils.parse_time(t)
+            ) < timedelta(minutes=STRIKE_RESET_TIME)
+        ]
+
+        self.user_strikes[uid].append(now.isoformat())
+
+        self.save_json()
+
+        return len(self.user_strikes[uid])
+
+    # =========================================================
+
+    async def punish_text_scam(self, message, reason):
 
         try:
             await message.delete()
         except:
             pass
 
-        uid = str(message.author.id)
-
-        self.user_strikes.setdefault(uid, [])
-
-        self.user_strikes[uid].append(
-            now.isoformat()
-        )
-
-        strikes = len(
-            self.user_strikes[uid]
-        )
-
-        self.save_json()
+        strikes = await self.add_strike(message.author.id)
 
         if strikes >= MAX_STRIKES:
 
-            await message.guild.ban(
-                message.author
-            )
+            await message.guild.ban(message.author)
 
             action = "BANNED"
 
@@ -433,19 +419,9 @@ class AntiSpam(commands.Cog):
             reason
         )
 
-    # =========================
-    # DUPLICATE SPAM
-    # =========================
+    # =========================================================
 
-    async def punish_duplicate(
-        self,
-        message,
-        duplicates
-    ):
-
-        now = discord.utils.utcnow()
-
-        user_id = message.author.id
+    async def punish_duplicate(self, message, duplicates):
 
         for entry in duplicates:
 
@@ -456,7 +432,6 @@ class AntiSpam(commands.Cog):
             if channel:
 
                 try:
-
                     msg = await channel.fetch_message(
                         entry["message_id"]
                     )
@@ -466,25 +441,11 @@ class AntiSpam(commands.Cog):
                 except:
                     pass
 
-        uid = str(user_id)
-
-        self.user_strikes.setdefault(uid, [])
-
-        self.user_strikes[uid].append(
-            now.isoformat()
-        )
-
-        strikes = len(
-            self.user_strikes[uid]
-        )
-
-        self.save_json()
+        strikes = await self.add_strike(message.author.id)
 
         if strikes >= MAX_STRIKES:
 
-            await message.guild.ban(
-                message.author
-            )
+            await message.guild.ban(message.author)
 
             action = "BANNED"
 
@@ -503,24 +464,16 @@ class AntiSpam(commands.Cog):
             "Duplicate Spam Detected"
         )
 
-    # =========================
-    # CROSS CHANNEL SPAM
-    # =========================
+    # =========================================================
 
-    async def punish_cross(
-        self,
-        message,
-        file_hash
-    ):
-
-        now = discord.utils.utcnow()
-
-        user_id = message.author.id
+    async def punish_cross(self, message, file_hash):
 
         related = [
+
             e for e in self.user_attachment_history[
-                user_id
+                message.author.id
             ]
+
             if e["hash"] == file_hash
         ]
 
@@ -533,7 +486,6 @@ class AntiSpam(commands.Cog):
             if channel:
 
                 try:
-
                     msg = await channel.fetch_message(
                         entry["message_id"]
                     )
@@ -543,25 +495,11 @@ class AntiSpam(commands.Cog):
                 except:
                     pass
 
-        uid = str(user_id)
-
-        self.user_strikes.setdefault(uid, [])
-
-        self.user_strikes[uid].append(
-            now.isoformat()
-        )
-
-        strikes = len(
-            self.user_strikes[uid]
-        )
-
-        self.save_json()
+        strikes = await self.add_strike(message.author.id)
 
         if strikes >= MAX_STRIKES:
 
-            await message.guild.ban(
-                message.author
-            )
+            await message.guild.ban(message.author)
 
             action = "BANNED"
 
@@ -580,84 +518,87 @@ class AntiSpam(commands.Cog):
             "Cross-Channel Spam Detected"
         )
 
-    # =========================
+    # =========================================================
+    # VIEW STRIKES
+    # =========================================================
+
+    @commands.hybrid_command(name="view_strikes")
+    async def view_strikes(self, ctx, member: discord.Member):
+
+        strikes = len(
+            self.user_strikes.get(str(member.id), [])
+        )
+
+        await ctx.send(
+            f"{member.mention} has {strikes} strike(s).",
+            ephemeral=True
+        )
+
+    # =========================================================
     # MANUAL TIMEOUT LOG
-    # =========================
+    # =========================================================
 
     @commands.Cog.listener()
-    async def on_member_update(
-        self,
-        before,
-        after
-    ):
+    async def on_member_update(self, before, after):
 
-        before_timeout = before.timed_out_until
-        after_timeout = after.timed_out_until
+        if before.timed_out_until == after.timed_out_until:
+            return
 
-        if (
-            before_timeout != after_timeout
-            and after_timeout is not None
-        ):
+        if after.timed_out_until is None:
+            return
 
-            # IMPORTANT
-            # Discord audit logs are delayed
-            await asyncio.sleep(5)
+        await asyncio.sleep(3)
 
-            moderator = "Unknown"
+        moderator = "Unknown"
+
+        duration_minutes = 0
+
+        # retry audit logs several times
+        for _ in range(5):
 
             try:
 
                 async for entry in after.guild.audit_logs(
-                    limit=25,
+                    limit=10,
                     action=discord.AuditLogAction.member_update
                 ):
 
-                    # correct target
                     if entry.target.id != after.id:
                         continue
 
-                    # detect timeout change
-                    if (
-                        hasattr(entry.after, "timed_out_until")
-                        or hasattr(entry.before, "timed_out_until")
-                    ):
+                    if not entry.after.timed_out_until:
+                        continue
 
-                        moderator = (
-                            f"{entry.user} "
-                            f"({entry.user.id})"
-                        )
+                    moderator = f"{entry.user} ({entry.user.id})"
 
-                        break
-
-            except Exception as e:
-                print(e)
-
-            now = discord.utils.utcnow()
-
-            duration_minutes = 0
-
-            if after_timeout:
-
-                remaining = after_timeout - now
-
-                duration_minutes = max(
-                    1,
-                    int(
-                        remaining.total_seconds() // 60
+                    remaining = (
+                        after.timed_out_until
+                        - discord.utils.utcnow()
                     )
-                )
 
-            log = self.bot.get_channel(
-                LOG_CHANNEL_ID
-            )
+                    duration_minutes = max(
+                        1,
+                        int(remaining.total_seconds() / 60)
+                    )
 
-            if not log:
-                return
+                    break
+
+            except:
+                pass
+
+            if moderator != "Unknown":
+                break
+
+            await asyncio.sleep(2)
+
+        log = self.bot.get_channel(LOG_CHANNEL_ID)
+
+        if log:
 
             embed = discord.Embed(
                 title="⏳ User Timed Out",
                 color=discord.Color.orange(),
-                timestamp=now
+                timestamp=discord.utils.utcnow()
             )
 
             embed.add_field(
@@ -680,95 +621,76 @@ class AntiSpam(commands.Cog):
 
             await log.send(embed=embed)
 
-    # =========================
+    # =========================================================
     # MANUAL BAN LOG
-    # =========================
+    # =========================================================
 
     @commands.Cog.listener()
-    async def on_member_ban(
-        self,
-        guild,
-        user
-    ):
+    async def on_member_ban(self, guild, user):
 
-        await asyncio.sleep(5)
+        await asyncio.sleep(3)
 
         moderator = "Unknown"
 
-        try:
+        reason = "No reason"
 
-            async for entry in guild.audit_logs(
-                limit=25,
-                action=discord.AuditLogAction.ban
-            ):
+        for _ in range(5):
 
-                if entry.target.id == user.id:
+            try:
 
-                    moderator = (
-                        f"{entry.user} "
-                        f"({entry.user.id})"
-                    )
+                async for entry in guild.audit_logs(
+                    limit=10,
+                    action=discord.AuditLogAction.ban
+                ):
+
+                    if entry.target.id != user.id:
+                        continue
+
+                    moderator = f"{entry.user} ({entry.user.id})"
+
+                    if entry.reason:
+                        reason = entry.reason
 
                     break
 
-        except Exception as e:
-            print(e)
+            except:
+                pass
 
-        log = self.bot.get_channel(
-            LOG_CHANNEL_ID
-        )
+            if moderator != "Unknown":
+                break
 
-        if not log:
-            return
+            await asyncio.sleep(2)
 
-        embed = discord.Embed(
-            title="🔨 User Banned",
-            color=discord.Color.dark_red(),
-            timestamp=discord.utils.utcnow()
-        )
+        log = self.bot.get_channel(LOG_CHANNEL_ID)
 
-        embed.add_field(
-            name="User",
-            value=f"{user} ({user.id})",
-            inline=False
-        )
+        if log:
 
-        embed.add_field(
-            name="Banned By",
-            value=moderator,
-            inline=False
-        )
-
-        await log.send(embed=embed)
-
-    # =========================
-    # VIEW STRIKES
-    # =========================
-
-    @commands.hybrid_command(
-        name="view_strikes"
-    )
-    async def view_strikes(
-        self,
-        ctx,
-        member: discord.Member
-    ):
-
-        strikes = len(
-            self.user_strikes.get(
-                str(member.id),
-                []
+            embed = discord.Embed(
+                title="🔨 User Banned",
+                color=discord.Color.dark_red(),
+                timestamp=discord.utils.utcnow()
             )
-        )
 
-        await ctx.send(
-            f"{member.mention} has {strikes} strike(s).",
-            ephemeral=True
-        )
+            embed.add_field(
+                name="User",
+                value=f"{user} ({user.id})",
+                inline=False
+            )
+
+            embed.add_field(
+                name="Banned By",
+                value=moderator,
+                inline=False
+            )
+
+            embed.add_field(
+                name="Reason",
+                value=reason,
+                inline=False
+            )
+
+            await log.send(embed=embed)
 
 
 async def setup(bot):
-
-    await bot.add_cog(
-        AntiSpam(bot)
-    )
+    await bot.add_cog(AntiSpam(bot))
